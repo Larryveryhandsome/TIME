@@ -212,6 +212,9 @@ export default function App() {
     setShowHint(true);
   };
 
+  // 將 Hook 呼叫移至頂層，避免在條件渲染中呼叫
+  const lampLongPressProps = useLongPress(handleLampLongPress, 800);
+
   if (showSplash) return <SplashScreen />;
   if (focusTask) return <FocusMode task={focusTask} onFinish={() => endFocus(true)} onPause={() => endFocus(false)} />;
 
@@ -299,7 +302,7 @@ export default function App() {
                 
                 <button 
                   onClick={() => setShowHint(!showHint)}
-                  {...useLongPress(handleLampLongPress, 800)}
+                  {...lampLongPressProps}
                   className="w-10 h-10 rounded-full bg-neutral-900 flex items-center justify-center border shadow-xl hover:bg-neutral-800 transition-colors"
                   style={{ borderColor: isSecretMode && showHint ? secretColor : '#262626' }}
                 >
@@ -406,7 +409,7 @@ const HomeView = ({ tasks, remaining, onAdd, onStart, onDelete, slideDirection }
 const TaskItem = ({ task, onStart, onDelete, index }) => {
   const done = task.status === 'completed';
   const category = CATEGORIES.find(c => c.id === task.category);
-  const longPressProps = useLongPress(onDelete, 800);
+  const longPressProps = useLongPress(() => onDelete(task.id), 800);
 
   return (
     <div className="animate-float-1" style={{ animationDelay: `${index * 0.1}s` }}>
