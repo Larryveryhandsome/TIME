@@ -1,723 +1,799 @@
-import React, { useState, useEffect, useRef, useMemo } from 'react';
-import { 
-  Play, Square, Check, Plus, Clock, BarChart2, 
-  Lightbulb, ArrowRight, X, Cat, 
-  ChevronLeft, ChevronRight, AlertCircle
-} from 'lucide-react';
-
-// --- 設定與常數 ---
-const CATEGORIES = [
-  { id: 'work', name: '工作', color: '#FFFFFF' },
-  { id: 'life', name: '生活', color: '#A1A1AA' },
-  { id: 'learn', name: '學習', color: '#F472B6' },
-  { id: 'health', name: '健康', color: '#34D399' },
-];
-
-const HINTS = [
-  "點擊左右箭頭切換提示",
-  "左右滑動畫面可切換日期",
-  "點擊下方「+」快速新增今日焦點",
-  "輸入時點擊右側箭頭可直接確認",
-  "點擊任務卡片進入「沉浸專注模式」",
-  "長按任務卡片可以刪除任務",
-  "點擊右下角「回顧」查看時間分配",
-  "未完成的任務點擊後有暖心鼓勵",
-  "標題旁邊好像躲著什麼東西...", 
-  "享受當下，把時間當作朋友"
-];
-
-const SECRETS = [
-  { text: "🌟 哇！你發現了隱藏功能！", color: '#FFD700' }, 
-  { text: "🤖 系統正在監控你的專注...開玩笑的", color: '#00FF00' }, 
-  { text: "☕ 休息一下，喝口水吧", color: '#00FFFF' }, 
-  { text: "🚀 時間管理大師成就解鎖 (想像的)", color: '#FF4500' }, 
-  { text: "🥚 這是一顆彩蛋", color: '#FF69B4' }, 
-];
-
-// --- 長按 Hook (模擬 APP 長按刪除) ---
-const useLongPress = (callback, ms = 500) => {
-  const timerRef = useRef();
-  const start = () => { timerRef.current = setTimeout(callback, ms); };
-  const stop = () => { clearTimeout(timerRef.current); };
-  return {
-    onMouseDown: start, onMouseUp: stop, onMouseLeave: stop,
-    onTouchStart: start, onTouchEnd: stop
-  };
-};
-
-export default function App() {
-  const [tasks, setTasks] = useState([]);
-  const [view, setView] = useState('home'); // home, stats, add
-  const [focusTask, setFocusTask] = useState(null);
-  const [showSplash, setShowSplash] = useState(true);
-  
-  // 提示框相關
-  const [showHint, setShowHint] = useState(false);
-  const [hintIndex, setHintIndex] = useState(0);
-  const [isSecretMode, setIsSecretMode] = useState(false); 
-  const [secretColor, setSecretColor] = useState('#222'); 
-  const [currentSecretText, setCurrentSecretText] = useState("");
-
-  // 重排任務 Modal 
-  const [rescheduleTask, setRescheduleTask] = useState(null);
-  
-  // 日期管理
-  const [currentDate, setCurrentDate] = useState(new Date());
-
-  // 滑動狀態
-  const [slideDirection, setSlideDirection] = useState(''); // 'left' or 'right'
-  const touchStartX = useRef(null);
-
-  // 初始化 & 讀取資料
-  useEffect(() => {
-    try {
-      const saved = localStorage.getItem('moment_tasks_web');
-      if (saved) setTasks(JSON.parse(saved));
-    } catch (e) { console.error("讀取失敗", e); }
-
-    // 開場動畫計時
-    const timer = setTimeout(() => setShowSplash(false), 3500);
-    return () => clearTimeout(timer);
-  }, []);
-
-  // 儲存資料
-  useEffect(() => {
-    localStorage.setItem('moment_tasks_web', JSON.stringify(tasks));
-  }, [tasks]);
-
-  // 提示框自動隱藏
-  useEffect(() => {
-    if (showHint) {
-      const duration = isSecretMode ? 3000 : 8000;
-      const timer = setTimeout(() => {
-        setShowHint(false);
-      }, duration);
-      return () => clearTimeout(timer);
-    } else {
-      setTimeout(() => {
-        setHintIndex(0);
-        setIsSecretMode(false);
-      }, 300);
-    }
-  }, [showHint, isSecretMode]);
-
-  const getDateStr = (date) => {
-    const year = date.getFullYear();
-    const month = String(date.getMonth() + 1).padStart(2, '0');
-    const day = String(date.getDate()).padStart(2, '0');
-    return `${year}-${month}-${day}`;
-  };
-
-  const currentDateStr = getDateStr(currentDate);
-  const currentViewTasks = tasks.filter(t => t.date === currentDateStr);
-  const remainingSlots = 3 - currentViewTasks.length;
-
-  // 切換日期與動畫
-  const changeDate = (days) => {
-    setSlideDirection(days > 0 ? 'left' : 'right'); // 視覺飛出方向
-    setTimeout(() => {
-      const newDate = new Date(currentDate);
-      newDate.setDate(newDate.getDate() + days); 
-      setCurrentDate(newDate);
-      setSlideDirection(''); // 重置動畫
-    }, 250);
-  };
-
-  // 手勢處理
-  const handleTouchStart = (e) => {
-    if (view !== 'home') return;
-    touchStartX.current = e.touches ? e.touches[0].clientX : e.clientX;
-  };
-  const handleTouchEnd = (e) => {
-    if (view !== 'home' || touchStartX.current === null) return;
-    const endX = e.changedTouches ? e.changedTouches[0].clientX : e.clientX;
-    const diff = endX - touchStartX.current;
-    if (diff < -50) changeDate(1); // 左滑 -> 明天
-    if (diff > 50) changeDate(-1); // 右滑 -> 昨天
-    touchStartX.current = null;
-  };
-
-  const handleAddTask = (title, categoryId) => {
-    if (remainingSlots <= 0) return;
-    const newTask = {
-      id: Date.now(),
-      title,
-      category: categoryId,
-      status: 'pending',
-      date: currentDateStr,
-      duration: 0,
-      startTime: null,
-    };
-    setTasks([...tasks, newTask]);
-    setView('home');
-  };
-
-  const handleConfirmReschedule = () => {
-    if (!rescheduleTask) return;
-    const today = new Date().toISOString().split('T')[0];
-    const todaysTasks = tasks.filter(t => t.date === today);
-    if (todaysTasks.length >= 3) {
-      alert("今天的任務已滿 (3/3)，無法加入。");
-      setRescheduleTask(null);
-      return;
+<!DOCTYPE html>
+<html lang="zh-TW">
+<head>
+  <meta charset="UTF-8">
+  <meta name="viewport" content="width=device-width, initial-scale=1.0, maximum-scale=1.0, user-scalable=no">
+  <title>時。刻</title>
+  <script src="https://cdn.tailwindcss.com"></script>
+  <!-- 引入 Lucide 圖示庫 -->
+  <script src="https://unpkg.com/lucide@latest"></script>
+  <style>
+    @import url('https://fonts.googleapis.com/css2?family=Noto+Sans+TC:wght@300;400;500;700&display=swap');
+    
+    body {
+      font-family: 'Noto Sans TC', sans-serif;
+      background-color: #0a0a0a;
+      color: white;
+      -webkit-tap-highlight-color: transparent;
+      user-select: none; /* 防止長按選取文字 */
     }
 
-    const newTask = {
-      id: Date.now(),
-      title: rescheduleTask.title,
-      category: rescheduleTask.category,
-      status: 'pending',
-      date: today,
-      duration: 0,
-      startTime: null,
-    };
+    .hide-scrollbar::-webkit-scrollbar { display: none; }
+    .hide-scrollbar { -ms-overflow-style: none; scrollbar-width: none; }
+    
+    @keyframes grow { from { height: 0; opacity: 0; } to { height: 5rem; opacity: 1; } }
+    @keyframes floatUp { from { transform: translateY(20px); opacity: 0; } to { transform: translateY(0); opacity: 1; } }
+    @keyframes breathe { 0%, 100% { opacity: 0.3; } 50% { opacity: 1; } }
+    @keyframes bite {
+      0% { transform: scale(1) translateX(0); }
+      20% { transform: scale(0.8) translateX(-5px); }
+      40% { transform: scale(2.5) translateX(30px); }
+      80% { transform: scale(2.5) translateX(30px); }
+      100% { transform: scale(1) translateX(0); }
+    }
+    @keyframes shake { 
+      0%, 100% { transform: rotate(0deg); } 
+      25% { transform: rotate(-10deg); } 
+      75% { transform: rotate(10deg); } 
+    }
 
-    setTasks([...tasks, newTask]);
-    setRescheduleTask(null);
-    setView('home');
-    setCurrentDate(new Date());
-  };
+    .animate-grow { animation: grow 1s ease-out forwards; }
+    .animate-float-1 { animation: floatUp 0.8s cubic-bezier(0.16, 1, 0.3, 1) 0.2s forwards; opacity: 0; }
+    .animate-float-2 { animation: floatUp 0.8s cubic-bezier(0.16, 1, 0.3, 1) 0.4s forwards; opacity: 0; }
+    .animate-float-3 { animation: floatUp 0.8s cubic-bezier(0.16, 1, 0.3, 1) 0.8s forwards; opacity: 0; }
+    .animate-breathe { animation: breathe 4s ease-in-out infinite; }
+    .cat-bite { animation: bite 0.8s cubic-bezier(0.34, 1.56, 0.64, 1) forwards; z-index: 50; position: relative; }
+    .cat-shake { animation: shake 0.15s ease-in-out; }
 
-  const startFocus = (id) => {
-    const task = tasks.find(t => t.id === id);
-    if (task) setFocusTask({ ...task, startTime: Date.now() });
-  };
+    /* 頁面切換轉場 */
+    .view-section { display: none; opacity: 0; transition: opacity 0.3s ease; }
+    .view-section.active { display: block; opacity: 1; }
 
-  const endFocus = (completed = false) => {
-    if (!focusTask) return;
-    const elapsedSeconds = Math.floor((Date.now() - focusTask.startTime) / 1000);
-    setTasks(tasks.map(t => {
-      if (t.id === focusTask.id) {
-        return {
-          ...t,
-          duration: (t.duration || 0) + elapsedSeconds,
-          status: completed ? 'completed' : 'pending'
-        };
-      }
-      return t;
-    }));
-    setFocusTask(null);
-  };
+    /* 滑動切換轉場 */
+    .slide-left { transform: translateX(-100%); opacity: 0; }
+    .slide-right { transform: translateX(100%); opacity: 0; }
+    .slide-center { transform: translateX(0); opacity: 1; transition: all 0.3s ease-in-out; }
+  </style>
+</head>
+<body class="min-h-screen flex justify-center selection:bg-neutral-800 m-0">
 
-  const handleDelete = (id) => {
-    setTasks(tasks.filter(t => t.id !== id));
-  };
-
-  const handleLampLongPress = () => {
-    if ("vibrate" in navigator) navigator.vibrate(50);
-    const randomSecret = SECRETS[Math.floor(Math.random() * SECRETS.length)];
-    setIsSecretMode(true);
-    setSecretColor(randomSecret.color);
-    setCurrentSecretText(randomSecret.text);
-    setShowHint(true);
-  };
-
-  // 將 Hook 呼叫移至頂層，避免在條件渲染中呼叫
-  const lampLongPressProps = useLongPress(handleLampLongPress, 800);
-
-  if (showSplash) return <SplashScreen />;
-  if (focusTask) return <FocusMode task={focusTask} onFinish={() => endFocus(true)} onPause={() => endFocus(false)} />;
-
-  return (
-    <div className="min-h-screen bg-neutral-950 flex justify-center text-white font-sans selection:bg-neutral-800">
-      {/* 模擬手機外框 */}
-      <div className="w-full max-w-md bg-black min-h-[100dvh] relative overflow-hidden flex flex-col shadow-2xl shadow-black/50">
+  <!-- 模擬手機外框 -->
+  <div id="app-container" class="w-full max-w-md bg-black min-h-[100dvh] relative overflow-hidden flex flex-col shadow-2xl shadow-black/50 hidden">
+    
+    <!-- Modal Overlay -->
+    <div id="reschedule-modal" class="absolute inset-0 z-50 bg-black/80 backdrop-blur-sm flex items-center justify-center p-6 hidden animate-float-1" style="animation-duration: 0.2s;">
+      <div class="bg-neutral-900 border border-neutral-800 w-full max-w-sm rounded-3xl p-6 shadow-2xl">
+        <div class="flex justify-between items-center mb-6">
+          <h2 class="text-xl font-bold text-white">暖心提醒</h2>
+          <button onclick="closeModal()" class="text-neutral-500 hover:text-white"><i data-lucide="x" class="w-5 h-5"></i></button>
+        </div>
+        <p class="text-lg text-white mb-2">「不要緊，你正在前進。」</p>
+        <p class="text-sm text-neutral-400 mb-6 leading-relaxed">這項任務尚未完成，要幫您安排進今天的待辦清單中嗎？</p>
         
-        {/* Modal Overlay */}
-        <RescheduleModal 
-          visible={!!rescheduleTask} 
-          task={rescheduleTask} 
-          onCancel={() => setRescheduleTask(null)}
-          onConfirm={handleConfirmReschedule}
-        />
-
-        {/* Header */}
-        <header className="px-6 pt-8 pb-4 flex justify-between items-end z-10 transition-opacity duration-500">
-          <div>
-            <p className="text-neutral-500 text-xs tracking-widest mb-1 uppercase font-medium">
-              {currentDate.toLocaleDateString('zh-TW', { month: 'long', day: 'numeric', weekday: 'short' })}
-            </p>
-            <div className="flex items-center gap-3">
-              <h1 className="text-3xl font-light tracking-wide">{view === 'stats' ? '時光軌跡' : '今日聚焦'}</h1>
-              {view === 'home' && <BlackCatEasterEgg />}
-            </div>
-          </div>
-          {view === 'home' && (
-            <div className="w-10 h-10 rounded-full border border-neutral-800 bg-neutral-900 flex items-center justify-center shadow-lg">
-              <span className="text-sm font-medium">{currentViewTasks.filter(t => t.status === 'completed').length}/3</span>
-            </div>
-          )}
-        </header>
-
-        {/* Content Area */}
-        <div 
-          className="flex-1 overflow-y-auto px-6 pb-32 hide-scrollbar relative"
-          onMouseDown={handleTouchStart}
-          onMouseUp={handleTouchEnd}
-          onTouchStart={handleTouchStart}
-          onTouchEnd={handleTouchEnd}
-        >
-          {view === 'home' ? (
-            <HomeView 
-              tasks={currentViewTasks} 
-              remaining={remainingSlots} 
-              onAdd={() => setView('add')}
-              onStart={startFocus}
-              onDelete={handleDelete}
-              slideDirection={slideDirection}
-            />
-          ) : view === 'add' ? (
-            <AddTaskView onCancel={() => setView('home')} onConfirm={handleAddTask} />
-          ) : (
-            <StatsView tasks={tasks} onReschedule={setRescheduleTask} />
-          )}
+        <div class="bg-black rounded-xl p-4 flex items-center mb-8 border border-neutral-800">
+          <div id="modal-task-dot" class="w-2 h-2 rounded-full mr-3"></div>
+          <span id="modal-task-title" class="text-neutral-300 truncate font-medium"></span>
         </div>
 
-        {/* Bottom Nav & Hints */}
-        {view !== 'add' && (
-          <div className="absolute bottom-6 left-0 right-0 px-8 flex flex-col items-end pointer-events-none">
-            
-            {/* Hint Bubble */}
-            {view === 'home' && (
-              <div className="relative flex flex-col items-end pointer-events-auto z-20">
-                <div className={`transition-all duration-300 origin-bottom-right ${showHint ? 'scale-100 opacity-100' : 'scale-90 opacity-0 pointer-events-none'}`}>
-                  <div 
-                    className="bg-neutral-900 p-4 rounded-2xl mb-3 border w-56 shadow-xl"
-                    style={{ borderColor: isSecretMode ? secretColor : '#262626' }}
-                  >
-                    <p className="text-sm leading-relaxed" style={{ color: isSecretMode ? secretColor : '#e5e5e5' }}>
-                      {isSecretMode ? currentSecretText : HINTS[hintIndex]}
-                    </p>
-                    {!isSecretMode && (
-                      <div className="flex justify-between items-center mt-3 pt-2 border-t border-neutral-800">
-                        <div className="flex gap-2">
-                          <button onClick={() => setHintIndex(prev => Math.max(prev - 1, 0))} className="text-neutral-500 hover:text-white transition-colors"><ChevronLeft size={16}/></button>
-                          <button onClick={() => setHintIndex(prev => Math.min(prev + 1, HINTS.length - 1))} className="text-neutral-500 hover:text-white transition-colors"><ChevronRight size={16}/></button>
-                        </div>
-                        <span className="text-xs text-neutral-600 font-bold italic">衞 peace</span>
-                      </div>
-                    )}
-                  </div>
-                </div>
-                
-                <button 
-                  onClick={() => setShowHint(!showHint)}
-                  {...lampLongPressProps}
-                  className="w-10 h-10 rounded-full bg-neutral-900 flex items-center justify-center border shadow-xl hover:bg-neutral-800 transition-colors"
-                  style={{ borderColor: isSecretMode && showHint ? secretColor : '#262626' }}
-                >
-                  <Lightbulb color={showHint ? (isSecretMode ? secretColor : "#fff") : "#666"} size={20} />
-                </button>
-              </div>
-            )}
-
-            {/* Navigation Bar */}
-            <div className="w-full bg-neutral-900/90 backdrop-blur-md px-8 py-3 rounded-full flex justify-between items-center border border-neutral-800 pointer-events-auto mt-4 shadow-2xl">
-              <button onClick={() => { setView('home'); setCurrentDate(new Date()); }} className="flex flex-col items-center gap-1 opacity-80 hover:opacity-100 transition-opacity">
-                <Clock color={view === 'home' ? '#fff' : '#666'} size={24} />
-                <span className={`text-[10px] ${view === 'home' ? 'text-white' : 'text-neutral-500'}`}>當下</span>
-              </button>
-
-              <button 
-                onClick={() => remainingSlots > 0 && setView('add')}
-                disabled={remainingSlots === 0}
-                className={`w-14 h-14 rounded-full flex items-center justify-center -mt-10 border transition-all ${remainingSlots > 0 ? 'bg-white text-black border-white shadow-xl shadow-white/20 hover:scale-105 active:scale-95' : 'bg-neutral-800 text-neutral-500 border-neutral-700'}`}
-              >
-                {remainingSlots > 0 ? <Plus size={32} /> : <span className="text-lg font-medium">完</span>}
-              </button>
-
-              <button onClick={() => setView('stats')} className="flex flex-col items-center gap-1 opacity-80 hover:opacity-100 transition-opacity">
-                <BarChart2 color={view === 'stats' ? '#fff' : '#666'} size={24} />
-                <span className={`text-[10px] ${view === 'stats' ? 'text-white' : 'text-neutral-500'}`}>回顧</span>
-              </button>
-            </div>
-          </div>
-        )}
-      </div>
-      
-      {/* Hide scrollbar styles injected */}
-      <style dangerouslySetInnerHTML={{__html: `
-        .hide-scrollbar::-webkit-scrollbar { display: none; }
-        .hide-scrollbar { -ms-overflow-style: none; scrollbar-width: none; }
-        @keyframes grow { from { height: 0; opacity: 0; } to { height: 5rem; opacity: 1; } }
-        @keyframes floatUp { from { transform: translateY(20px); opacity: 0; } to { transform: translateY(0); opacity: 1; } }
-        @keyframes breathe { 0%, 100% { opacity: 0.3; } 50% { opacity: 1; } }
-        @keyframes bite {
-          0% { transform: scale(1) translateX(0); }
-          20% { transform: scale(0.8) translateX(-5px); }
-          40% { transform: scale(2.5) translateX(30px); }
-          80% { transform: scale(2.5) translateX(30px); }
-          100% { transform: scale(1) translateX(0); }
-        }
-        .animate-grow { animation: grow 1s ease-out forwards; }
-        .animate-float-1 { animation: floatUp 0.8s cubic-bezier(0.16, 1, 0.3, 1) 0.2s forwards; opacity: 0; }
-        .animate-float-2 { animation: floatUp 0.8s cubic-bezier(0.16, 1, 0.3, 1) 0.4s forwards; opacity: 0; }
-        .animate-float-3 { animation: floatUp 0.8s cubic-bezier(0.16, 1, 0.3, 1) 0.8s forwards; opacity: 0; }
-        .animate-breathe { animation: breathe 4s ease-in-out infinite; }
-        .cat-bite { animation: bite 0.8s cubic-bezier(0.34, 1.56, 0.64, 1) forwards; }
-      `}} />
-    </div>
-  );
-}
-
-// --- 質感開場動畫 ---
-const SplashScreen = () => (
-  <div className="absolute inset-0 bg-black flex flex-col items-center justify-center z-50">
-    <div className="w-px bg-neutral-700 animate-grow mb-6 rounded-full"></div>
-    <div className="flex gap-4 mb-8 overflow-hidden">
-      <span className="text-5xl font-light tracking-[0.2em] animate-float-1">時</span>
-      <span className="text-5xl font-light tracking-[0.2em] animate-float-2">刻</span>
-    </div>
-    <span className="text-neutral-500 text-xs tracking-[0.3em] uppercase animate-float-3">
-      把時間當作朋友
-    </span>
-  </div>
-);
-
-// --- 首頁視圖 ---
-const HomeView = ({ tasks, remaining, onAdd, onStart, onDelete, slideDirection }) => {
-  // 處理滑動轉場 class
-  const translateClass = slideDirection === 'left' ? '-translate-x-full opacity-0' : slideDirection === 'right' ? 'translate-x-full opacity-0' : 'translate-x-0 opacity-100';
-
-  return (
-    <div className={`transition-all duration-300 ease-in-out ${translateClass}`}>
-      {tasks.length === 0 && (
-        <p className="text-neutral-500 text-sm leading-relaxed my-6 animate-float-1">
-          「專注當下，時間便有了形狀。」
-        </p>
-      )}
-      
-      {tasks.map((t, index) => (
-        <TaskItem key={t.id} index={index} task={t} onStart={() => onStart(t.id)} onDelete={() => onDelete(t.id)} />
-      ))}
-
-      {Array.from({ length: remaining }).map((_, i) => (
-        <div key={`empty-${i}`} className="animate-float-1" style={{ animationDelay: `${0.3 + i * 0.1}s` }}>
-          <button 
-            onClick={onAdd} 
-            className="w-full h-24 border border-dashed border-neutral-800 rounded-3xl flex items-center justify-center mb-4 text-neutral-600 hover:text-neutral-400 hover:border-neutral-600 transition-colors active:scale-[0.98]"
-          >
-            <span className="text-sm">+ 新增任務</span>
-          </button>
-        </div>
-      ))}
-    </div>
-  );
-};
-
-// --- 單個任務卡片 ---
-const TaskItem = ({ task, onStart, onDelete, index }) => {
-  const done = task.status === 'completed';
-  const category = CATEGORIES.find(c => c.id === task.category);
-  const longPressProps = useLongPress(() => onDelete(task.id), 800);
-
-  return (
-    <div className="animate-float-1" style={{ animationDelay: `${index * 0.1}s` }}>
-      <div 
-        onClick={!done ? onStart : undefined}
-        {...(!done ? longPressProps : {})}
-        className={`w-full p-5 rounded-3xl mb-4 flex flex-col justify-between h-28 cursor-pointer transition-all duration-300 active:scale-[0.98] select-none ${done ? 'bg-white text-black' : 'bg-neutral-900 border border-neutral-800 hover:border-neutral-700 text-white shadow-lg'}`}
-      >
-        <div className="flex justify-between items-start">
-          <div className="flex-1 overflow-hidden">
-            <div className="flex items-center gap-2 mb-2">
-              <div className="w-1.5 h-1.5 rounded-full" style={{ backgroundColor: category?.color || '#555' }} />
-              <span className={`text-[10px] tracking-wider uppercase ${done ? 'text-neutral-500' : 'text-neutral-400'}`}>
-                {category?.name}
-              </span>
-            </div>
-            <h3 className={`text-lg font-medium truncate pr-4 ${done ? 'text-neutral-400 line-through' : ''}`}>
-              {task.title}
-            </h3>
-          </div>
-          <div className={`w-8 h-8 rounded-full flex items-center justify-center flex-shrink-0 ${done ? 'bg-black text-white' : 'bg-white text-black shadow-md'}`}>
-            {done ? <Check size={14} /> : <Play fill="currentColor" size={12} className="ml-0.5" />}
-          </div>
-        </div>
-        <div className="flex justify-between items-end">
-          <span className={`text-[10px] tracking-widest ${done ? 'text-neutral-400' : 'text-neutral-500'}`}>
-            {done ? '已完成' : '點擊開始計時 (長按刪除)'}
-          </span>
-          {task.duration > 0 && (
-            <span className={`text-xs font-bold ${done ? 'text-neutral-400' : 'text-neutral-300'}`}>
-              {Math.floor(task.duration / 60)} min
-            </span>
-          )}
-        </div>
-      </div>
-    </div>
-  );
-};
-
-// --- 商談/專注模式 ---
-const FocusMode = ({ task, onFinish, onPause }) => {
-  const [seconds, setSeconds] = useState(0);
-
-  useEffect(() => {
-    const timer = setInterval(() => setSeconds(s => s + 1), 1000);
-    return () => clearInterval(timer);
-  }, []);
-
-  const formatTime = (s) => {
-    const min = Math.floor(s / 60).toString().padStart(2, '0');
-    const sec = (s % 60).toString().padStart(2, '0');
-    return `${min}:${sec}`;
-  };
-
-  const category = CATEGORIES.find(c => c.id === task.category);
-
-  return (
-    <div className="absolute inset-0 bg-black z-40 flex flex-col justify-between items-center py-20 px-8 animate-float-1">
-      <div className="flex flex-col items-center gap-4 mt-8">
-        <span 
-          className="px-4 py-1.5 rounded-full text-xs font-bold text-black"
-          style={{ backgroundColor: category?.color || '#fff' }}
-        >
-          {category?.name}
-        </span>
-        <h2 className="text-3xl font-light text-center leading-tight max-w-[280px] break-words">
-          {task.title}
-        </h2>
-      </div>
-
-      <div className="flex flex-col items-center">
-        <div className="text-[5rem] font-extralight tracking-widest font-mono text-white mb-2" style={{ fontVariantNumeric: 'tabular-nums' }}>
-          {formatTime(seconds)}
-        </div>
-        <span className="text-neutral-500 tracking-[0.2em] text-sm animate-breathe uppercase">
-          專注中...
-        </span>
-        <span className="text-neutral-600 text-xs mt-6 tracking-wide">
-          網頁版請保持畫面開啟
-        </span>
-      </div>
-
-      <div className="flex gap-4 w-full">
-        <button onClick={onPause} className="flex-1 py-4 rounded-full border border-neutral-700 flex justify-center items-center gap-2 hover:bg-neutral-900 transition-colors active:scale-95 text-white">
-          <Square fill="currentColor" size={16} className="text-neutral-400" />
-          <span className="font-medium">暫停</span>
-        </button>
-        <button onClick={onFinish} className="flex-1 py-4 rounded-full bg-white text-black flex justify-center items-center gap-2 hover:bg-neutral-200 transition-colors active:scale-95 shadow-lg shadow-white/10">
-          <Check size={20} strokeWidth={3} />
-          <span className="font-bold">完成</span>
-        </button>
-      </div>
-    </div>
-  );
-};
-
-// --- 新增任務 ---
-const AddTaskView = ({ onCancel, onConfirm }) => {
-  const [text, setText] = useState('');
-  const [selectedCat, setSelectedCat] = useState('work');
-
-  return (
-    <div className="flex flex-col justify-between h-full pt-20 animate-float-1">
-      <div>
-        <h2 className="text-3xl text-white font-light mb-8">新增任務</h2>
-        
-        <div className="flex items-center border-b border-neutral-800 pb-2 mb-10 transition-colors focus-within:border-neutral-500">
-          <input 
-            type="text" 
-            placeholder="輸入任務名稱..." 
-            className="flex-1 bg-transparent text-2xl text-white outline-none placeholder:text-neutral-600"
-            value={text}
-            onChange={e => setText(e.target.value)}
-            autoFocus
-            onKeyDown={e => e.key === 'Enter' && text && onConfirm(text, selectedCat)}
-          />
-          {text.length > 0 && (
-            <button onClick={() => onConfirm(text, selectedCat)} className="p-2 bg-white text-black rounded-full hover:scale-105 active:scale-95 transition-all">
-              <ArrowRight size={20} />
-            </button>
-          )}
-        </div>
-
-        <p className="text-xs text-neutral-500 tracking-widest uppercase mb-4">選擇分類</p>
-        <div className="flex flex-wrap gap-3">
-          {CATEGORIES.map(cat => (
-            <button 
-              key={cat.id}
-              onClick={() => setSelectedCat(cat.id)}
-              className={`px-5 py-2.5 rounded-full border text-sm transition-all ${selectedCat === cat.id ? 'text-black font-medium' : 'border-neutral-800 text-neutral-400 hover:border-neutral-600'}`}
-              style={selectedCat === cat.id ? { backgroundColor: cat.color, borderColor: cat.color } : {}}
-            >
-              {cat.name}
-            </button>
-          ))}
-        </div>
-      </div>
-
-      <div className="pb-8">
-        <button onClick={onCancel} className="w-full py-4 text-neutral-500 hover:text-white transition-colors font-medium">
-          取消
-        </button>
-      </div>
-    </div>
-  );
-};
-
-// --- 統計回顧 ---
-const StatsView = ({ tasks, onReschedule }) => {
-  const [offset, setOffset] = useState(0);
-  const date = new Date();
-  date.setMonth(date.getMonth() + offset);
-
-  const monthTasks = useMemo(() => tasks.filter(t => {
-    const d = new Date(t.date);
-    return d.getMonth() === date.getMonth() && d.getFullYear() === date.getFullYear();
-  }), [tasks, offset]);
-
-  const catStats = useMemo(() => {
-    const stats = {};
-    monthTasks.forEach(t => {
-      stats[t.category] = (stats[t.category] || 0) + (t.duration || 0);
-    });
-    const totalTime = Object.values(stats).reduce((a, b) => a + b, 0) || 1;
-    return CATEGORIES.map(c => ({
-      ...c,
-      seconds: stats[c.id] || 0,
-      percent: Math.round(((stats[c.id] || 0) / totalTime) * 100)
-    })).sort((a, b) => b.seconds - a.seconds);
-  }, [monthTasks]);
-
-  const pendingTasks = monthTasks.filter(t => t.status === 'pending');
-  const todayStr = new Date().toISOString().split('T')[0];
-  const todayCompleted = tasks.filter(t => t.date === todayStr && t.status === 'completed');
-
-  return (
-    <div className="animate-float-1 pb-10">
-      <div className="flex justify-between items-center py-4 border-b border-neutral-900 mb-6">
-        <button onClick={() => setOffset(o => o - 1)} className="p-2 text-neutral-500 hover:text-white"><ChevronLeft size={20}/></button>
-        <span className="text-lg font-medium tracking-wide">{date.toLocaleDateString('zh-TW', { year: 'numeric', month: 'long' })}</span>
-        <button onClick={() => setOffset(o => o + 1)} className="p-2 text-neutral-500 hover:text-white"><ChevronRight size={20}/></button>
-      </div>
-
-      {offset === 0 && (
-        <div className="bg-neutral-900 rounded-3xl p-6 mb-6 shadow-lg border border-neutral-800/50">
-          <h3 className="text-white font-medium mb-4 flex items-center gap-2">今日已完成 ({todayCompleted.length})</h3>
-          {todayCompleted.length > 0 ? (
-            <div className="space-y-3">
-              {todayCompleted.map(t => (
-                <div key={t.id} className="flex items-center text-neutral-300 text-sm">
-                  <Check size={14} className="text-emerald-400 mr-2 flex-shrink-0" />
-                  <span className="truncate">{t.title}</span>
-                </div>
-              ))}
-            </div>
-          ) : (
-             <p className="text-neutral-500 text-sm text-center py-2">今天還沒開始，加油！</p>
-          )}
-        </div>
-      )}
-
-      <div className="bg-neutral-900 rounded-3xl p-6 mb-6 shadow-lg border border-neutral-800/50">
-        <h3 className="text-white font-medium mb-5">時間都去哪了？</h3>
-        {catStats.map((cat, i) => (
-          <div key={cat.id} className="mb-4 last:mb-0">
-            <div className="flex justify-between text-xs mb-1.5">
-              <span className="text-neutral-400">{cat.name}</span>
-              <span className="text-neutral-500 font-medium">{Math.floor(cat.seconds / 60)} min</span>
-            </div>
-            <div className="h-1.5 bg-neutral-800 rounded-full overflow-hidden">
-              <div className="h-full rounded-full transition-all duration-1000 ease-out" style={{ width: `${cat.percent}%`, backgroundColor: cat.color }} />
-            </div>
-          </div>
-        ))}
-        {monthTasks.length === 0 && <p className="text-neutral-500 text-sm text-center py-4">本月尚無紀錄</p>}
-      </div>
-
-      <div className="bg-neutral-900 rounded-3xl p-6 mb-6 shadow-lg border border-neutral-800/50">
-        <h3 className="text-white font-medium mb-4 flex items-center gap-2">
-          <AlertCircle size={16} className="text-neutral-500" />
-          未完成的承諾 ({pendingTasks.length})
-        </h3>
-        {pendingTasks.slice(0, 5).map(t => (
-          <div 
-            key={t.id} 
-            onClick={() => onReschedule(t)}
-            className="flex items-center text-neutral-400 text-sm mb-3 cursor-pointer hover:text-white transition-colors group"
-          >
-            <div className="w-2 h-2 rounded-full mr-3 group-hover:scale-125 transition-transform" style={{ backgroundColor: CATEGORIES.find(c=>c.id===t.category)?.color || '#555' }} />
-            <span className="truncate">{t.title}</span>
-          </div>
-        ))}
-        {pendingTasks.length > 5 && <p className="text-neutral-600 text-xs mt-3">...還有 {pendingTasks.length - 5} 項</p>}
-        {pendingTasks.length === 0 && monthTasks.length > 0 && <p className="text-emerald-400 text-sm text-center font-medium py-2">太棒了！本月任務全部完成！</p>}
-      </div>
-    </div>
-  );
-};
-
-// --- 重排任務 Modal ---
-const RescheduleModal = ({ visible, task, onCancel, onConfirm }) => {
-  if (!visible) return null;
-  return (
-    <div className="absolute inset-0 z-50 bg-black/80 backdrop-blur-sm flex items-center justify-center p-6 animate-float-1" style={{ animationDuration: '0.2s' }}>
-      <div className="bg-neutral-900 border border-neutral-800 w-full max-w-sm rounded-3xl p-6 shadow-2xl">
-        <div className="flex justify-between items-center mb-6">
-          <h2 className="text-xl font-bold text-white">暖心提醒</h2>
-          <button onClick={onCancel} className="text-neutral-500 hover:text-white"><X size={20}/></button>
-        </div>
-        <p className="text-lg text-white mb-2">「不要緊，你正在前進。」</p>
-        <p className="text-sm text-neutral-400 mb-6 leading-relaxed">這項任務尚未完成，要幫您安排進今天的待辦清單中嗎？</p>
-        
-        <div className="bg-black rounded-xl p-4 flex items-center mb-8 border border-neutral-800">
-          <div className="w-2 h-2 rounded-full mr-3" style={{ backgroundColor: CATEGORIES.find(c=>c.id===task?.category)?.color || '#555' }} />
-          <span className="text-neutral-300 truncate font-medium">{task?.title}</span>
-        </div>
-
-        <div className="flex gap-3">
-          <button onClick={onCancel} className="flex-1 py-3 rounded-xl border border-neutral-700 text-neutral-400 hover:text-white hover:bg-neutral-800 transition-colors font-medium text-sm">
+        <div class="flex gap-3">
+          <button onclick="closeModal()" class="flex-1 py-3 rounded-xl border border-neutral-700 text-neutral-400 hover:text-white hover:bg-neutral-800 transition-colors font-medium text-sm">
             不用了
           </button>
-          <button onClick={onConfirm} className="flex-1 py-3 rounded-xl bg-white text-black hover:bg-neutral-200 transition-colors font-bold text-sm shadow-lg shadow-white/10">
+          <button onclick="confirmReschedule()" class="flex-1 py-3 rounded-xl bg-white text-black hover:bg-neutral-200 transition-colors font-bold text-sm shadow-lg shadow-white/10">
             好，加入今天
           </button>
         </div>
       </div>
     </div>
-  );
-};
 
-// --- 招財貓/黑貓 彩蛋 ---
-const BlackCatEasterEgg = () => {
-  const [clicks, setClicks] = useState(0);
-  const [animState, setAnimState] = useState(''); // 'shake', 'bite'
-  
-  const handleClick = () => {
-    if ("vibrate" in navigator) navigator.vibrate(10);
-    const next = clicks + 1;
-    setClicks(next);
+    <!-- Header -->
+    <header id="main-header" class="px-6 pt-8 pb-4 flex justify-between items-end z-10 transition-opacity duration-500">
+      <div>
+        <p id="header-date" class="text-neutral-500 text-xs tracking-widest mb-1 uppercase font-medium"></p>
+        <div class="flex items-center gap-3">
+          <h1 id="header-title" class="text-3xl font-light tracking-wide">今日聚焦</h1>
+          <button id="cat-easter-egg" class="ml-3 cursor-pointer outline-none transform origin-bottom" style="display: none;">
+            <i data-lucide="cat" id="cat-icon" class="w-6 h-6 text-[#333] transition-colors duration-200"></i>
+          </button>
+        </div>
+      </div>
+      <div id="task-counter" class="w-10 h-10 rounded-full border border-neutral-800 bg-neutral-900 flex items-center justify-center shadow-lg">
+        <span id="task-counter-text" class="text-sm font-medium">0/3</span>
+      </div>
+    </header>
 
-    if (next < 10) {
-      setAnimState('shake');
-      setTimeout(() => setAnimState(''), 150);
-    } else {
-      setAnimState('bite');
-      if ("vibrate" in navigator) navigator.vibrate(100);
+    <!-- Content Area -->
+    <div id="content-area" class="flex-1 overflow-y-auto px-6 pb-32 hide-scrollbar relative slide-center">
+      
+      <!-- Home View -->
+      <div id="view-home" class="view-section active">
+        <div id="task-list-container"></div>
+        <div id="add-task-btn-container"></div>
+      </div>
+
+      <!-- Add Task View -->
+      <div id="view-add" class="view-section">
+        <div class="flex flex-col justify-between h-full pt-20 animate-float-1">
+          <div>
+            <h2 class="text-3xl text-white font-light mb-8">新增任務</h2>
+            <div class="flex items-center border-b border-neutral-800 pb-2 mb-10 transition-colors focus-within:border-neutral-500">
+              <input type="text" id="new-task-input" placeholder="輸入任務名稱..." class="flex-1 bg-transparent text-2xl text-white outline-none placeholder:text-neutral-600">
+              <button id="confirm-add-btn" class="p-2 bg-white text-black rounded-full hover:scale-105 active:scale-95 transition-all hidden">
+                <i data-lucide="arrow-right" class="w-5 h-5"></i>
+              </button>
+            </div>
+            <p class="text-xs text-neutral-500 tracking-widest uppercase mb-4">選擇分類</p>
+            <div id="category-container" class="flex flex-wrap gap-3"></div>
+          </div>
+          <div class="pb-8 mt-auto">
+            <button onclick="switchView('home')" class="w-full py-4 text-neutral-500 hover:text-white transition-colors font-medium">取消</button>
+          </div>
+        </div>
+      </div>
+
+      <!-- Stats View -->
+      <div id="view-stats" class="view-section">
+        <div class="animate-float-1 pb-10">
+          <div class="flex justify-between items-center py-4 border-b border-neutral-900 mb-6">
+            <button onclick="changeStatsMonth(-1)" class="p-2 text-neutral-500 hover:text-white"><i data-lucide="chevron-left" class="w-5 h-5"></i></button>
+            <span id="stats-month-text" class="text-lg font-medium tracking-wide"></span>
+            <button onclick="changeStatsMonth(1)" class="p-2 text-neutral-500 hover:text-white"><i data-lucide="chevron-right" class="w-5 h-5"></i></button>
+          </div>
+          <div id="stats-content"></div>
+        </div>
+      </div>
+
+    </div>
+
+    <!-- Focus View (Overlay) -->
+    <div id="view-focus" class="absolute inset-0 bg-black z-40 flex flex-col justify-between items-center py-20 px-8 animate-float-1 hidden">
+      <div class="flex flex-col items-center gap-4 mt-8">
+        <span id="focus-cat-badge" class="px-4 py-1.5 rounded-full text-xs font-bold text-black"></span>
+        <h2 id="focus-title" class="text-3xl font-light text-center leading-tight max-w-[280px] break-words"></h2>
+      </div>
+      <div class="flex flex-col items-center">
+        <div id="focus-timer" class="text-[5rem] font-extralight tracking-widest font-mono text-white mb-2" style="font-variant-numeric: tabular-nums;">00:00</div>
+        <span class="text-neutral-500 tracking-[0.2em] text-sm animate-breathe uppercase">專注中...</span>
+        <span class="text-neutral-600 text-xs mt-6 tracking-wide">網頁版請保持畫面開啟</span>
+      </div>
+      <div class="flex gap-4 w-full">
+        <button onclick="endFocus(false)" class="flex-1 py-4 rounded-full border border-neutral-700 flex justify-center items-center gap-2 hover:bg-neutral-900 transition-colors active:scale-95 text-white">
+          <i data-lucide="square" class="w-4 h-4 text-neutral-400 fill-current"></i>
+          <span class="font-medium">暫停</span>
+        </button>
+        <button onclick="endFocus(true)" class="flex-1 py-4 rounded-full bg-white text-black flex justify-center items-center gap-2 hover:bg-neutral-200 transition-colors active:scale-95 shadow-lg shadow-white/10">
+          <i data-lucide="check" class="w-5 h-5 stroke-[3px]"></i>
+          <span class="font-bold">完成</span>
+        </button>
+      </div>
+    </div>
+
+    <!-- Bottom Nav & Hints -->
+    <div id="bottom-nav-container" class="absolute bottom-6 left-0 right-0 px-8 flex flex-col items-end pointer-events-none">
+      
+      <!-- Hint Bubble -->
+      <div id="hint-wrapper" class="relative flex flex-col items-end pointer-events-auto z-20 hidden mb-4">
+        <div id="hint-bubble-anim" class="transition-all duration-300 origin-bottom-right scale-90 opacity-0 pointer-events-none">
+          <div id="hint-bubble-bg" class="bg-neutral-900 p-4 rounded-2xl mb-3 border border-neutral-800 w-56 shadow-xl">
+            <p id="hint-text" class="text-sm leading-relaxed text-neutral-200"></p>
+            <div id="hint-footer" class="flex justify-between items-center mt-3 pt-2 border-t border-neutral-800">
+              <div class="flex gap-2">
+                <button onclick="changeHint(-1)" class="text-neutral-500 hover:text-white transition-colors"><i data-lucide="chevron-left" class="w-4 h-4"></i></button>
+                <button onclick="changeHint(1)" class="text-neutral-500 hover:text-white transition-colors"><i data-lucide="chevron-right" class="w-4 h-4"></i></button>
+              </div>
+              <span class="text-xs text-neutral-600 font-bold italic">衞 peace</span>
+            </div>
+          </div>
+        </div>
+        
+        <button id="lamp-btn" class="w-10 h-10 rounded-full bg-neutral-900 flex items-center justify-center border border-neutral-800 shadow-xl hover:bg-neutral-800 transition-colors">
+          <i id="lamp-icon" data-lucide="lightbulb" class="w-5 h-5 text-neutral-500"></i>
+        </button>
+      </div>
+
+      <!-- Navigation Bar -->
+      <div class="w-full bg-neutral-900/90 backdrop-blur-md px-8 py-3 rounded-full flex justify-between items-center border border-neutral-800 pointer-events-auto shadow-2xl">
+        <button onclick="resetToHome()" class="flex flex-col items-center gap-1 opacity-80 hover:opacity-100 transition-opacity">
+          <i data-lucide="clock" id="nav-home-icon" class="w-6 h-6 text-white"></i>
+          <span id="nav-home-text" class="text-[10px] text-white">當下</span>
+        </button>
+
+        <button id="nav-add-btn" onclick="switchView('add')" class="w-14 h-14 rounded-full flex items-center justify-center -mt-10 border transition-all bg-white text-black border-white shadow-xl shadow-white/20 hover:scale-105 active:scale-95">
+          <i data-lucide="plus" id="nav-add-icon" class="w-8 h-8"></i>
+          <span id="nav-done-text" class="text-lg font-medium hidden">完</span>
+        </button>
+
+        <button onclick="switchView('stats')" class="flex flex-col items-center gap-1 opacity-80 hover:opacity-100 transition-opacity">
+          <i data-lucide="bar-chart-2" id="nav-stats-icon" class="w-6 h-6 text-neutral-500"></i>
+          <span id="nav-stats-text" class="text-[10px] text-neutral-500">回顧</span>
+        </button>
+      </div>
+    </div>
+
+  </div>
+
+  <!-- Splash Screen -->
+  <div id="splash-screen" class="fixed inset-0 bg-black flex flex-col items-center justify-center z-50">
+    <div class="w-px bg-neutral-700 animate-grow mb-6 rounded-full"></div>
+    <div class="flex gap-4 mb-8 overflow-hidden">
+      <span class="text-5xl font-light tracking-[0.2em] animate-float-1">時</span>
+      <span class="text-5xl font-light tracking-[0.2em] animate-float-2">刻</span>
+    </div>
+    <span class="text-neutral-500 text-xs tracking-[0.3em] uppercase animate-float-3">
+      把時間當作朋友
+    </span>
+  </div>
+
+  <script>
+    // --- 狀態管理 ---
+    const CATEGORIES = [
+      { id: 'work', name: '工作', color: '#FFFFFF' },
+      { id: 'life', name: '生活', color: '#A1A1AA' },
+      { id: 'learn', name: '學習', color: '#F472B6' },
+      { id: 'health', name: '健康', color: '#34D399' },
+    ];
+
+    const HINTS = [
+      "點擊左右箭頭切換提示", "左右滑動畫面可切換日期", "點擊下方「+」快速新增今日焦點",
+      "輸入時點擊右側箭頭可直接確認", "點擊任務卡片進入「沉浸專注模式」",
+      "長按任務卡片可以刪除任務", "點擊右下角「回顧」查看時間分配",
+      "未完成的任務點擊後有暖心鼓勵", "標題旁邊好像躲著什麼東西...", "享受當下，把時間當作朋友"
+    ];
+
+    const SECRETS = [
+      { text: "🌟 哇！你發現了隱藏功能！", color: '#FFD700' }, 
+      { text: "🤖 系統正在監控你的專注...開玩笑的", color: '#00FF00' }, 
+      { text: "☕ 休息一下，喝口水吧", color: '#00FFFF' }, 
+      { text: "🚀 時間管理大師成就解鎖 (想像的)", color: '#FF4500' }, 
+      { text: "🥚 這是一顆彩蛋", color: '#FF69B4' }, 
+    ];
+
+    let state = {
+      tasks: JSON.parse(localStorage.getItem('moment_tasks_web')) || [],
+      view: 'home',
+      currentDate: new Date(),
+      focusTask: null,
+      focusSeconds: 0,
+      focusInterval: null,
+      statsOffset: 0,
+      selectedCat: 'work',
+      
+      // Hint states
+      showHint: false,
+      hintIndex: 0,
+      isSecretMode: false,
+      secretColor: '#222',
+      currentSecretText: '',
+      hintTimer: null,
+
+      // Cat states
+      catClicks: 0,
+      
+      // Reschedule
+      rescheduleTask: null
+    };
+
+    // --- 初始化 ---
+    document.addEventListener('DOMContentLoaded', () => {
+      lucide.createIcons();
       setTimeout(() => {
-        setAnimState('');
-        setClicks(0);
-      }, 800);
-    }
-  };
+        document.getElementById('splash-screen').style.display = 'none';
+        document.getElementById('app-container').classList.remove('hidden');
+        render();
+      }, 3500);
 
-  return (
-    <button 
-      onClick={handleClick} 
-      className={`ml-3 cursor-pointer outline-none ${animState === 'shake' ? 'animate-[shake_0.15s_ease-in-out]' : ''} ${animState === 'bite' ? 'cat-bite z-50 relative' : ''}`}
-      style={{ transformOrigin: 'bottom center' }}
-    >
-      <Cat 
-        color={animState === 'bite' ? "#FFFFFF" : "#333333"} 
-        size={24} 
-        fill={animState === 'bite' ? "#000" : "transparent"} 
-        className="transition-colors duration-200"
-      />
-      <style dangerouslySetInnerHTML={{__html: `
-        @keyframes shake { 0%, 100% { transform: rotate(0deg); } 25% { transform: rotate(-10deg); } 75% { transform: rotate(10deg); } }
-      `}}/>
-    </button>
-  );
-};
+      setupEventListeners();
+      renderCategories();
+    });
+
+    function saveTasks() {
+      localStorage.setItem('moment_tasks_web', JSON.stringify(state.tasks));
+    }
+
+    function getDateStr(d) {
+      const year = d.getFullYear();
+      const month = String(d.getMonth() + 1).padStart(2, '0');
+      const day = String(d.getDate()).padStart(2, '0');
+      return `${year}-${month}-${day}`;
+    }
+
+    // --- 渲染畫面 ---
+    function render() {
+      // Header
+      document.getElementById('header-date').textContent = state.currentDate.toLocaleDateString('zh-TW', { month: 'long', day: 'numeric', weekday: 'short' });
+      document.getElementById('header-title').textContent = state.view === 'stats' ? '時光軌跡' : '今日聚焦';
+      
+      const currentTasks = state.tasks.filter(t => t.date === getDateStr(state.currentDate));
+      const completedCount = currentTasks.filter(t => t.status === 'completed').length;
+      
+      document.getElementById('task-counter').style.display = state.view === 'home' ? 'flex' : 'none';
+      document.getElementById('task-counter-text').textContent = `${completedCount}/3`;
+      document.getElementById('cat-easter-egg').style.display = state.view === 'home' ? 'block' : 'none';
+      document.getElementById('hint-wrapper').style.display = state.view === 'home' ? 'flex' : 'none';
+
+      // Views
+      document.querySelectorAll('.view-section').forEach(el => el.classList.remove('active'));
+      document.getElementById(`view-${state.view}`).classList.add('active');
+
+      // Bottom Nav
+      if(state.view !== 'add') {
+        document.getElementById('bottom-nav-container').classList.remove('hidden');
+        document.getElementById('nav-home-icon').setAttribute('color', state.view === 'home' ? '#fff' : '#666');
+        document.getElementById('nav-home-text').className = `text-[10px] ${state.view === 'home' ? 'text-white' : 'text-neutral-500'}`;
+        document.getElementById('nav-stats-icon').setAttribute('color', state.view === 'stats' ? '#fff' : '#666');
+        document.getElementById('nav-stats-text').className = `text-[10px] ${state.view === 'stats' ? 'text-white' : 'text-neutral-500'}`;
+        
+        const remaining = Math.max(0, 3 - currentTasks.length);
+        const addBtn = document.getElementById('nav-add-btn');
+        const addIcon = document.getElementById('nav-add-icon');
+        const doneText = document.getElementById('nav-done-text');
+        
+        if(remaining > 0) {
+          addBtn.disabled = false;
+          addBtn.className = "w-14 h-14 rounded-full flex items-center justify-center -mt-10 border transition-all bg-white text-black border-white shadow-xl shadow-white/20 hover:scale-105 active:scale-95";
+          addIcon.style.display = 'block';
+          doneText.style.display = 'none';
+        } else {
+          addBtn.disabled = true;
+          addBtn.className = "w-14 h-14 rounded-full flex items-center justify-center -mt-10 border transition-all bg-neutral-800 text-neutral-500 border-neutral-700";
+          addIcon.style.display = 'none';
+          doneText.style.display = 'block';
+        }
+      } else {
+        document.getElementById('bottom-nav-container').classList.add('hidden');
+      }
+
+      if (state.view === 'home') renderHomeTasks(currentTasks);
+      if (state.view === 'stats') renderStats();
+
+      lucide.createIcons();
+    }
+
+    function switchView(v) {
+      state.view = v;
+      if (v === 'home') document.getElementById('content-area').className = "flex-1 overflow-y-auto px-6 pb-32 hide-scrollbar relative slide-center";
+      render();
+    }
+
+    function resetToHome() {
+      state.currentDate = new Date();
+      switchView('home');
+    }
+
+    // --- 首頁邏輯 ---
+    function renderHomeTasks(tasks) {
+      const listContainer = document.getElementById('task-list-container');
+      const addContainer = document.getElementById('add-task-btn-container');
+      listContainer.innerHTML = '';
+      addContainer.innerHTML = '';
+
+      if (tasks.length === 0) {
+        listContainer.innerHTML = `<p class="text-neutral-500 text-sm leading-relaxed my-6 animate-float-1">「專注當下，時間便有了形狀。」</p>`;
+      }
+
+      tasks.forEach((t, i) => {
+        const done = t.status === 'completed';
+        const cat = CATEGORIES.find(c => c.id === t.category);
+        const el = document.createElement('div');
+        el.className = 'animate-float-1';
+        el.style.animationDelay = `${i * 0.1}s`;
+        
+        el.innerHTML = `
+          <div data-id="${t.id}" class="task-card w-full p-5 rounded-3xl mb-4 flex flex-col justify-between h-28 cursor-pointer transition-all duration-300 active:scale-[0.98] select-none ${done ? 'bg-white text-black' : 'bg-neutral-900 border border-neutral-800 hover:border-neutral-700 text-white shadow-lg'}">
+            <div class="flex justify-between items-start pointer-events-none">
+              <div class="flex-1 overflow-hidden">
+                <div class="flex items-center gap-2 mb-2">
+                  <div class="w-1.5 h-1.5 rounded-full" style="background-color: ${cat?.color || '#555'}"></div>
+                  <span class="text-[10px] tracking-wider uppercase ${done ? 'text-neutral-500' : 'text-neutral-400'}">${cat?.name}</span>
+                </div>
+                <h3 class="text-lg font-medium truncate pr-4 ${done ? 'text-neutral-400 line-through' : ''}">${t.title}</h3>
+              </div>
+              <div class="w-8 h-8 rounded-full flex items-center justify-center flex-shrink-0 ${done ? 'bg-black text-white' : 'bg-white text-black shadow-md'}">
+                ${done ? '<i data-lucide="check" class="w-[14px] h-[14px]"></i>' : '<i data-lucide="play" class="w-3 h-3 ml-0.5 fill-current"></i>'}
+              </div>
+            </div>
+            <div class="flex justify-between items-end pointer-events-none">
+              <span class="text-[10px] tracking-widest ${done ? 'text-neutral-400' : 'text-neutral-500'}">${done ? '已完成' : '點擊開始計時 (長按刪除)'}</span>
+              ${t.duration > 0 ? `<span class="text-xs font-bold ${done ? 'text-neutral-400' : 'text-neutral-300'}">${Math.floor(t.duration / 60)} min</span>` : ''}
+            </div>
+          </div>
+        `;
+        listContainer.appendChild(el);
+      });
+
+      const remaining = Math.max(0, 3 - tasks.length);
+      for (let i = 0; i < remaining; i++) {
+        const el = document.createElement('div');
+        el.className = 'animate-float-1';
+        el.style.animationDelay = `${0.3 + i * 0.1}s`;
+        el.innerHTML = `
+          <button onclick="switchView('add')" class="w-full h-24 border border-dashed border-neutral-800 rounded-3xl flex items-center justify-center mb-4 text-neutral-600 hover:text-neutral-400 hover:border-neutral-600 transition-colors active:scale-[0.98]">
+            <span class="text-sm">+ 新增任務</span>
+          </button>
+        `;
+        addContainer.appendChild(el);
+      }
+
+      // 綁定長按與點擊事件
+      document.querySelectorAll('.task-card').forEach(card => {
+        let timer;
+        const id = parseInt(card.getAttribute('data-id'));
+        const task = state.tasks.find(t => t.id === id);
+        if(!task) return;
+
+        const startPress = (e) => {
+          if(task.status === 'completed') return;
+          timer = setTimeout(() => { deleteTask(id); }, 800);
+        };
+        const cancelPress = () => { clearTimeout(timer); };
+        const handleClick = () => {
+          if(task.status !== 'completed') startFocus(id);
+        };
+
+        card.addEventListener('mousedown', startPress);
+        card.addEventListener('touchstart', startPress, {passive: true});
+        card.addEventListener('mouseup', cancelPress);
+        card.addEventListener('mouseleave', cancelPress);
+        card.addEventListener('touchend', cancelPress);
+        
+        // click 為了避免與 long press 衝突，我們簡單處理
+        card.addEventListener('click', (e) => {
+          cancelPress();
+          handleClick();
+        });
+      });
+    }
+
+    // --- 滑動切換日期 ---
+    let touchStartX = null;
+    const contentArea = document.getElementById('content-area');
+    
+    function handleSwipeStart(e) {
+      if (state.view !== 'home') return;
+      touchStartX = e.touches ? e.touches[0].clientX : e.clientX;
+    }
+    function handleSwipeEnd(e) {
+      if (state.view !== 'home' || touchStartX === null) return;
+      const touchEndX = e.changedTouches ? e.changedTouches[0].clientX : e.clientX;
+      const diff = touchEndX - touchStartX;
+      if (diff < -50) changeDateSwipe(1); // 左滑 明天
+      if (diff > 50) changeDateSwipe(-1); // 右滑 昨天
+      touchStartX = null;
+    }
+
+    contentArea.addEventListener('touchstart', handleSwipeStart, {passive: true});
+    contentArea.addEventListener('touchend', handleSwipeEnd);
+    contentArea.addEventListener('mousedown', handleSwipeStart);
+    contentArea.addEventListener('mouseup', handleSwipeEnd);
+
+    function changeDateSwipe(days) {
+      contentArea.className = `flex-1 overflow-y-auto px-6 pb-32 hide-scrollbar relative transition-all duration-300 ease-in-out ${days > 0 ? 'slide-left' : 'slide-right'}`;
+      setTimeout(() => {
+        state.currentDate.setDate(state.currentDate.getDate() + days);
+        render();
+        contentArea.className = "flex-1 overflow-y-auto px-6 pb-32 hide-scrollbar relative slide-center";
+      }, 250);
+    }
+
+    // --- 新增任務 ---
+    const taskInput = document.getElementById('new-task-input');
+    const confirmAddBtn = document.getElementById('confirm-add-btn');
+
+    taskInput.addEventListener('input', (e) => {
+      confirmAddBtn.style.display = e.target.value.trim().length > 0 ? 'block' : 'none';
+    });
+    taskInput.addEventListener('keydown', (e) => {
+      if(e.key === 'Enter' && taskInput.value.trim()) confirmTaskAdd();
+    });
+    confirmAddBtn.addEventListener('click', confirmTaskAdd);
+
+    function renderCategories() {
+      const container = document.getElementById('category-container');
+      container.innerHTML = '';
+      CATEGORIES.forEach(cat => {
+        const btn = document.createElement('button');
+        const isSelected = state.selectedCat === cat.id;
+        btn.className = `px-5 py-2.5 rounded-full border text-sm transition-all ${isSelected ? 'text-black font-medium' : 'border-neutral-800 text-neutral-400 hover:border-neutral-600'}`;
+        if(isSelected) {
+          btn.style.backgroundColor = cat.color;
+          btn.style.borderColor = cat.color;
+        }
+        btn.textContent = cat.name;
+        btn.onclick = () => { state.selectedCat = cat.id; renderCategories(); };
+        container.appendChild(btn);
+      });
+    }
+
+    function confirmTaskAdd() {
+      const title = taskInput.value.trim();
+      if(!title) return;
+      const currentTasks = state.tasks.filter(t => t.date === getDateStr(state.currentDate));
+      if (currentTasks.length >= 3) return;
+
+      state.tasks.push({
+        id: Date.now(),
+        title,
+        category: state.selectedCat,
+        status: 'pending',
+        date: getDateStr(state.currentDate),
+        duration: 0,
+        startTime: null
+      });
+      taskInput.value = '';
+      confirmAddBtn.style.display = 'none';
+      saveTasks();
+      switchView('home');
+    }
+
+    function deleteTask(id) {
+      state.tasks = state.tasks.filter(t => t.id !== id);
+      saveTasks();
+      render();
+    }
+
+    // --- 專注模式 ---
+    function startFocus(id) {
+      const task = state.tasks.find(t => t.id === id);
+      if(!task) return;
+      state.focusTask = { ...task, startTime: Date.now() };
+      state.focusSeconds = 0;
+      
+      document.getElementById('focus-title').textContent = task.title;
+      const cat = CATEGORIES.find(c => c.id === task.category);
+      const badge = document.getElementById('focus-cat-badge');
+      badge.textContent = cat.name;
+      badge.style.backgroundColor = cat.color;
+      
+      document.getElementById('view-focus').classList.remove('hidden');
+      
+      state.focusInterval = setInterval(() => {
+        state.focusSeconds++;
+        const m = String(Math.floor(state.focusSeconds / 60)).padStart(2, '0');
+        const s = String(state.focusSeconds % 60).padStart(2, '0');
+        document.getElementById('focus-timer').textContent = `${m}:${s}`;
+      }, 1000);
+    }
+
+    function endFocus(completed) {
+      clearInterval(state.focusInterval);
+      if(!state.focusTask) return;
+      const elapsed = Math.floor((Date.now() - state.focusTask.startTime) / 1000);
+      
+      const index = state.tasks.findIndex(t => t.id === state.focusTask.id);
+      if(index > -1) {
+        state.tasks[index].duration = (state.tasks[index].duration || 0) + elapsed;
+        state.tasks[index].status = completed ? 'completed' : 'pending';
+      }
+      
+      saveTasks();
+      state.focusTask = null;
+      document.getElementById('view-focus').classList.add('hidden');
+      render();
+    }
+
+    // --- 統計回顧 ---
+    function changeStatsMonth(dir) {
+      state.statsOffset += dir;
+      renderStats();
+    }
+
+    function renderStats() {
+      const d = new Date();
+      d.setMonth(d.getMonth() + state.statsOffset);
+      document.getElementById('stats-month-text').textContent = d.toLocaleDateString('zh-TW', { year: 'numeric', month: 'long' });
+
+      const monthTasks = state.tasks.filter(t => {
+        const td = new Date(t.date);
+        return td.getMonth() === d.getMonth() && td.getFullYear() === d.getFullYear();
+      });
+
+      const stats = {};
+      monthTasks.forEach(t => {
+        stats[t.category] = (stats[t.category] || 0) + (t.duration || 0);
+      });
+      const totalTime = Object.values(stats).reduce((a, b) => a + b, 0) || 1;
+      const catStats = CATEGORIES.map(c => ({
+        ...c,
+        seconds: stats[c.id] || 0,
+        percent: Math.round(((stats[c.id] || 0) / totalTime) * 100)
+      })).sort((a, b) => b.seconds - a.seconds);
+
+      const pendingTasks = monthTasks.filter(t => t.status === 'pending');
+      const todayStr = new Date().toISOString().split('T')[0];
+      const todayCompleted = state.tasks.filter(t => t.date === todayStr && t.status === 'completed');
+
+      let html = '';
+      
+      // 今日已完成
+      if (state.statsOffset === 0) {
+        html += `
+          <div class="bg-neutral-900 rounded-3xl p-6 mb-6 shadow-lg border border-neutral-800/50">
+            <h3 class="text-white font-medium mb-4 flex items-center gap-2">今日已完成 (${todayCompleted.length})</h3>
+            ${todayCompleted.length > 0 ? 
+              `<div class="space-y-3">
+                ${todayCompleted.map(t => `<div class="flex items-center text-neutral-300 text-sm"><i data-lucide="check" class="w-[14px] h-[14px] text-emerald-400 mr-2 flex-shrink-0"></i><span class="truncate">${t.title}</span></div>`).join('')}
+              </div>` : 
+              `<p class="text-neutral-500 text-sm text-center py-2">今天還沒開始，加油！</p>`
+            }
+          </div>
+        `;
+      }
+
+      // 時間去哪了
+      html += `<div class="bg-neutral-900 rounded-3xl p-6 mb-6 shadow-lg border border-neutral-800/50">
+        <h3 class="text-white font-medium mb-5">時間都去哪了？</h3>`;
+      catStats.forEach(cat => {
+        html += `
+          <div class="mb-4 last:mb-0">
+            <div class="flex justify-between text-xs mb-1.5">
+              <span class="text-neutral-400">${cat.name}</span>
+              <span class="text-neutral-500 font-medium">${Math.floor(cat.seconds / 60)} min</span>
+            </div>
+            <div class="h-1.5 bg-neutral-800 rounded-full overflow-hidden">
+              <div class="h-full rounded-full transition-all duration-1000 ease-out" style="width: ${cat.percent}%; background-color: ${cat.color}"></div>
+            </div>
+          </div>
+        `;
+      });
+      if(monthTasks.length === 0) html += `<p class="text-neutral-500 text-sm text-center py-4">本月尚無紀錄</p>`;
+      html += `</div>`;
+
+      // 未完成
+      html += `<div class="bg-neutral-900 rounded-3xl p-6 mb-6 shadow-lg border border-neutral-800/50">
+        <h3 class="text-white font-medium mb-4 flex items-center gap-2"><i data-lucide="alert-circle" class="w-4 h-4 text-neutral-500"></i>未完成的承諾 (${pendingTasks.length})</h3>`;
+      
+      pendingTasks.slice(0, 5).forEach(t => {
+        const catColor = CATEGORIES.find(c=>c.id===t.category)?.color || '#555';
+        html += `
+          <div onclick="openRescheduleModal(${t.id})" class="flex items-center text-neutral-400 text-sm mb-3 cursor-pointer hover:text-white transition-colors group">
+            <div class="w-2 h-2 rounded-full mr-3 group-hover:scale-125 transition-transform" style="background-color: ${catColor}"></div>
+            <span class="truncate">${t.title}</span>
+          </div>
+        `;
+      });
+      if(pendingTasks.length > 5) html += `<p class="text-neutral-600 text-xs mt-3">...還有 ${pendingTasks.length - 5} 項</p>`;
+      if(pendingTasks.length === 0 && monthTasks.length > 0) html += `<p class="text-emerald-400 text-sm text-center font-medium py-2">太棒了！本月任務全部完成！</p>`;
+      html += `</div>`;
+
+      document.getElementById('stats-content').innerHTML = html;
+      lucide.createIcons();
+    }
+
+    // --- Modal 邏輯 ---
+    function openRescheduleModal(id) {
+      const task = state.tasks.find(t => t.id === id);
+      if(!task) return;
+      state.rescheduleTask = task;
+      const catColor = CATEGORIES.find(c=>c.id===task.category)?.color || '#555';
+      document.getElementById('modal-task-dot').style.backgroundColor = catColor;
+      document.getElementById('modal-task-title').textContent = task.title;
+      document.getElementById('reschedule-modal').classList.remove('hidden');
+    }
+
+    function closeModal() {
+      document.getElementById('reschedule-modal').classList.add('hidden');
+      state.rescheduleTask = null;
+    }
+
+    function confirmReschedule() {
+      if(!state.rescheduleTask) return;
+      const today = new Date().toISOString().split('T')[0];
+      const todaysTasks = state.tasks.filter(t => t.date === today);
+      if (todaysTasks.length >= 3) {
+        alert("今天的任務已滿 (3/3)，無法加入。");
+        closeModal();
+        return;
+      }
+      state.tasks.push({
+        id: Date.now(),
+        title: state.rescheduleTask.title,
+        category: state.rescheduleTask.category,
+        status: 'pending',
+        date: today,
+        duration: 0,
+        startTime: null
+      });
+      saveTasks();
+      closeModal();
+      resetToHome();
+    }
+
+    // --- 小燈泡邏輯 ---
+    const lampBtn = document.getElementById('lamp-btn');
+    let lampPressTimer;
+    
+    function setupEventListeners() {
+      // 燈泡長按
+      const startLamp = () => {
+        lampPressTimer = setTimeout(() => {
+          if ("vibrate" in navigator) navigator.vibrate(50);
+          const secret = SECRETS[Math.floor(Math.random() * SECRETS.length)];
+          state.isSecretMode = true;
+          state.secretColor = secret.color;
+          state.currentSecretText = secret.text;
+          showHintBubble(true);
+        }, 800);
+      };
+      const clearLamp = () => clearTimeout(lampPressTimer);
+      
+      lampBtn.addEventListener('mousedown', startLamp);
+      lampBtn.addEventListener('touchstart', startLamp, {passive: true});
+      lampBtn.addEventListener('mouseup', clearLamp);
+      lampBtn.addEventListener('mouseleave', clearLamp);
+      lampBtn.addEventListener('touchend', clearLamp);
+      lampBtn.addEventListener('click', () => { clearLamp(); showHintBubble(!state.showHint); });
+
+      // 貓咪點擊
+      document.getElementById('cat-easter-egg').addEventListener('click', handleCatClick);
+    }
+
+    function showHintBubble(show) {
+      state.showHint = show;
+      const wrapper = document.getElementById('hint-bubble-anim');
+      const bg = document.getElementById('hint-bubble-bg');
+      const text = document.getElementById('hint-text');
+      const footer = document.getElementById('hint-footer');
+      const lampIcon = document.getElementById('lamp-icon');
+
+      if (show) {
+        wrapper.classList.remove('scale-90', 'opacity-0', 'pointer-events-none');
+        wrapper.classList.add('scale-100', 'opacity-100');
+        
+        bg.style.borderColor = state.isSecretMode ? state.secretColor : '#262626';
+        text.style.color = state.isSecretMode ? state.secretColor : '#e5e5e5';
+        text.textContent = state.isSecretMode ? state.currentSecretText : HINTS[state.hintIndex];
+        footer.style.display = state.isSecretMode ? 'none' : 'flex';
+        
+        lampIcon.setAttribute('color', state.isSecretMode ? state.secretColor : '#fff');
+        lampBtn.style.borderColor = state.isSecretMode ? state.secretColor : '#262626';
+
+        clearTimeout(state.hintTimer);
+        state.hintTimer = setTimeout(() => { showHintBubble(false); }, state.isSecretMode ? 3000 : 8000);
+      } else {
+        wrapper.classList.remove('scale-100', 'opacity-100');
+        wrapper.classList.add('scale-90', 'opacity-0', 'pointer-events-none');
+        lampIcon.setAttribute('color', '#666');
+        lampBtn.style.borderColor = '#262626';
+        
+        setTimeout(() => {
+          state.hintIndex = 0;
+          state.isSecretMode = false;
+        }, 300);
+      }
+      lucide.createIcons();
+    }
+
+    function changeHint(dir) {
+      state.hintIndex = Math.max(0, Math.min(state.hintIndex + dir, HINTS.length - 1));
+      showHintBubble(true); // refresh content and reset timer
+    }
+
+    // --- 黑貓邏輯 ---
+    function handleCatClick() {
+      if ("vibrate" in navigator) navigator.vibrate(10);
+      state.catClicks++;
+      const catIcon = document.getElementById('cat-icon');
+      const catBtn = document.getElementById('cat-easter-egg');
+
+      if (state.catClicks < 10) {
+        catBtn.classList.add('cat-shake');
+        setTimeout(() => catBtn.classList.remove('cat-shake'), 150);
+      } else {
+        if ("vibrate" in navigator) navigator.vibrate(100);
+        catIcon.setAttribute('color', '#ffffff');
+        catIcon.setAttribute('fill', '#000000');
+        catBtn.classList.add('cat-bite');
+        
+        setTimeout(() => {
+          catBtn.classList.remove('cat-bite');
+          catIcon.setAttribute('color', '#333333');
+          catIcon.setAttribute('fill', 'transparent');
+          state.catClicks = 0;
+          lucide.createIcons(); // refresh SVG attributes
+        }, 800);
+      }
+      lucide.createIcons(); // Apply changes
+    }
+  </script>
+</body>
+</html>
